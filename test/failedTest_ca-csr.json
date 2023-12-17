@@ -1,0 +1,16 @@
+{
+	"CN": "MY Failed CA",
+	"key": {
+		"algo": "rsa",
+		"size": 2048
+	},
+	"names": [
+		{
+			"C": "JP",
+			"L": "MT",
+			"ST": "Tokyo",
+			"O": "My Failed Company",
+			"OU": "CA Service"
+		}
+	]
+}
