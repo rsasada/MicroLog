@@ -22,7 +22,6 @@ type store struct {
 	size	uint64
 }
 
-// newStoreを呼ぶとき他のstoreのファイルと被っていないかチェックするべき
 func  newStore(f *os.File) (*store, error) {
 	
 	fi, err := os.Stat(f.Name())
@@ -37,7 +36,7 @@ func  newStore(f *os.File) (*store, error) {
 	}, nil
 }
 
-//ファイルサイズに最大値はあるのか　storeがnilの時　
+//ファイルサイズの最大値　storeがnilの時　
 func (s *store) Append(p []byte) (n uint64, pos uint64, err error) {
 	
 	s.mu.Lock()

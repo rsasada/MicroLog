@@ -9,7 +9,8 @@ import (
 
 var (
 	write = [][]byte{
-		
+		[]byte{'\000'},
+		[]byte("hello world"),
 	}
 )
 

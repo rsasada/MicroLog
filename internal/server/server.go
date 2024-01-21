@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
@@ -26,19 +25,18 @@ import (
 )
 
 type Config struct {
-	CommitLog  CommitLog
-	Authorizer Authorizer
+	CommitLog   CommitLog
+	Authorizer  Authorizer
+	GetServerer GetServerer
 }
 
 const (
-	objectWildCard = "*"
+	objectWildcard = "*"
 	produceAction  = "produce"
 	consumeAction  = "consume"
 )
 
-type Authorizer interface {
-	Authorize(subject, object, Action string) error
-}
+var _ api.LogServer = (*grpcServer)(nil)
 
 type grpcServer struct {
 	api.UnimplementedLogServer
@@ -50,15 +48,16 @@ type CommitLog interface {
 	Read(uint64) (*api.Record, error)
 }
 
-var _ api.LogServer = (*grpcServer)(nil)
+type Authorizer interface {
+	Authorize(subject, object, action string) error
+}
 
 func NewGRPCServer(config *Config, grpcOpts ...grpc.ServerOption) (
 	*grpc.Server,
 	error,
 ) {
-
 	logger := zap.L().Named("server")
-	zapOpts := []grpc_zapOption{
+	zapOpts := []grpc_zap.Option{
 		grpc_zap.WithDurationField(
 			func(duration time.Duration) zapcore.Field {
 				return zap.Int64(
@@ -68,33 +67,29 @@ func NewGRPCServer(config *Config, grpcOpts ...grpc.ServerOption) (
 			},
 		),
 	}
-	halfSampler := trace.ProbabilitySampler(0.5)
-	trace.ApplyConfig(trace.Config{
-		DefaultSampler: func(p trace.SamplingRarameters) trace.SamplingDecision {
-			if strings.Contains(p.Name, "Produce") {
-				return traec.SamplingDecision{Sample: true}
-			}
-			return halfSampler(p)
-		},
-	})
-	err := view.Register(ocgrpc.DefaultSerecrViews...)
+
+	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
+	err := view.Register(ocgrpc.DefaultServerViews...)
 	if err != nil {
 		return nil, err
 	}
-	grpcOpts = append(grpcOpts, grpc.StreamInterceptor(
-		grpc_middleware.ChainStreamServer(
-			grpc_ctxtags.StreamServerInterceptor(),
-			grpc_zap.StreamServerInterceptor(logger, zapOpts...),
-			grpc_auth.StreamServerInterceptor(authenticate),
-		)), grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
-		grpc_ctxtags.UnaryServerInterceptor(),
-		grpc_zap.UnaryServerInterceptor(logger, zapOpts...),
-		grpc_auth.UnaryServerInterceptor(authenticate),
-	)),
-	grpc.StatusHandler(&ocgrpc.ServerHandler{})
-)
+
+	grpcOpts = append(grpcOpts,
+		grpc.StreamInterceptor(
+			grpc_middleware.ChainStreamServer(
+				grpc_ctxtags.StreamServerInterceptor(),
+				grpc_zap.StreamServerInterceptor(logger, zapOpts...),
+				grpc_auth.StreamServerInterceptor(authenticate),
+			)), grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+			grpc_ctxtags.UnaryServerInterceptor(),
+			grpc_zap.UnaryServerInterceptor(logger, zapOpts...),
+			grpc_auth.UnaryServerInterceptor(authenticate),
+		)),
+		grpc.StatsHandler(&ocgrpc.ServerHandler{}),
+	)
+
 	gsrv := grpc.NewServer(grpcOpts...)
-	srv, err := new_grpcServer(config)
+	srv, err := newgrpcServer(config)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +97,7 @@ func NewGRPCServer(config *Config, grpcOpts ...grpc.ServerOption) (
 	return gsrv, nil
 }
 
-func new_grpcServer(config *Config) (srv *grpcServer, err error) {
+func newgrpcServer(config *Config) (srv *grpcServer, err error) {
 	srv = &grpcServer{
 		Config: config,
 	}
@@ -111,10 +106,9 @@ func new_grpcServer(config *Config) (srv *grpcServer, err error) {
 
 func (s *grpcServer) Produce(ctx context.Context, req *api.ProduceRequest) (
 	*api.ProduceResponse, error) {
-
 	if err := s.Authorizer.Authorize(
 		subject(ctx),
-		objectWildCard,
+		objectWildcard,
 		produceAction,
 	); err != nil {
 		return nil, err
@@ -128,11 +122,10 @@ func (s *grpcServer) Produce(ctx context.Context, req *api.ProduceRequest) (
 
 func (s *grpcServer) Consume(ctx context.Context, req *api.ConsumeRequest) (
 	*api.ConsumeResponse, error) {
-
 	if err := s.Authorizer.Authorize(
 		subject(ctx),
-		objectWildCard,
-		produceAction,
+		objectWildcard,
+		consumeAction,
 	); err != nil {
 		return nil, err
 	}
@@ -143,7 +136,9 @@ func (s *grpcServer) Consume(ctx context.Context, req *api.ConsumeRequest) (
 	return &api.ConsumeResponse{Record: record}, nil
 }
 
-func (s *grpcServer) ProduceStream(stream api.Log_ProduceStreamServer) error {
+func (s *grpcServer) ProduceStream(
+	stream api.Log_ProduceStreamServer,
+) error {
 	for {
 		req, err := stream.Recv()
 		if err != nil {
@@ -151,7 +146,7 @@ func (s *grpcServer) ProduceStream(stream api.Log_ProduceStreamServer) error {
 		}
 		res, err := s.Produce(stream.Context(), req)
 		if err != nil {
-			return nil
+			return err
 		}
 		if err = stream.Send(res); err != nil {
 			return err
@@ -163,7 +158,6 @@ func (s *grpcServer) ConsumeStream(
 	req *api.ConsumeRequest,
 	stream api.Log_ConsumeStreamServer,
 ) error {
-
 	for {
 		select {
 		case <-stream.Context().Done():
@@ -183,6 +177,20 @@ func (s *grpcServer) ConsumeStream(
 			req.Offset++
 		}
 	}
+}
+
+func (s *grpcServer) GetServers(
+	ctx context.Context, req *api.GetServersRequest,
+) (*api.GetServersResponse, error) {
+	servers, err := s.GetServerer.GetServers()
+	if err != nil {
+		return nil, err
+	}
+	return &api.GetServersResponse{Servers: servers}, nil
+}
+
+type GetServerer interface {
+	GetServers() ([]*api.Server, error)
 }
 
 func authenticate(ctx context.Context) (context.Context, error) {

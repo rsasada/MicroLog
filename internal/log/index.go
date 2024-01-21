@@ -67,7 +67,7 @@ func (idx *index) Read(offIn int64) (offOut uint32, pos uint64, err error) {
 		return 0, 0, io.EOF
 	}
 	if offIn < 0 {
-		offOut = uint32((idx.size / entWidth) - 1)
+		offOut = uint32((idx.size / entWidth) - 1) //0 < idx.size < entWidthにはならないためoverflowは起きない
 	} else {
 		offOut = uint32(offIn)
 	}
@@ -88,10 +88,10 @@ func (idx *index) Write(off uint32, pos uint64) error {
 	if _, _, err := idx.Read(int64(off)); err == nil {
 		return errors.New(fmt.Sprintf("Error: %s", "this offset is arleady existing!!"))
 	}
-	next_off := uint32(idx.size / entWidth)
-	if next_off != off {
-		return errors.New(fmt.Sprintf("Error: You are skipping numbers from the expected offset : %d", next_off))
-	}
+	// next_off := uint32(idx.size / entWidth)　　　　//複数のindexファイルを作成する事を考えると、このコードは必要がない
+	// if next_off != off {　　　　　　　　
+	// 	return errors.New(fmt.Sprintf("Error: You are skipping numbers from the expected offset : %d", next_off))
+	// }
 	binary.BigEndian.PutUint32(idx.mmap[idx.size:idx.size+offWidth], off)
 	binary.BigEndian.PutUint64(idx.mmap[idx.size+offWidth:idx.size+entWidth], pos)
 	idx.size += uint64(entWidth)
